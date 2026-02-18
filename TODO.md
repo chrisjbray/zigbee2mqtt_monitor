@@ -1,7 +1,7 @@
 # TODO: Zigbee2MQTT Network Monitor
 
-- [ ] Implement core MQTT collection and aggregation logic
-- [ ] Create real-time CLI reporting interface
-- [ ] Add bandwidth and message rate calculations
-- [ ] Implement topic filtering (ignore bridge noise)
+- [x] Implement core MQTT collection and aggregation logic
+- [x] Create real-time CLI reporting interface
+- [x] Add bandwidth and message rate calculations
+- [x] Implement topic filtering (ignore bridge noise)
 - [x] Setup project infrastructure
