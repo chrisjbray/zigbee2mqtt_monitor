@@ -5,7 +5,7 @@ import logging
 import os
 import sys
 import time
-from collections import defaultdict
+from collections import defaultdict, deque
 from datetime import datetime
 from threading import Lock
 
@@ -45,12 +45,48 @@ parser.add_argument(
 )
 args = parser.parse_args()
 
+
 # Stats tracking
+class TrafficHistory:
+    def __init__(self, max_seconds=900):
+        self.max_seconds = max_seconds
+        self.history = deque()  # Entries: [ts_int, msgs, bytes]
+        self.lock = Lock()
+
+    def add(self, ts, size):
+        with self.lock:
+            ts_int = int(ts)
+            if self.history and self.history[-1][0] == ts_int:
+                self.history[-1][1] += 1
+                self.history[-1][2] += size
+            else:
+                self.history.append([ts_int, 1, size])
+            self._prune(ts_int)
+
+    def _prune(self, now_int):
+        cutoff = now_int - self.max_seconds
+        while self.history and self.history[0][0] < cutoff:
+            self.history.popleft()
+
+    def get_rates(self, now, intervals=[60, 300, 900]):
+        with self.lock:
+            now_int = int(now)
+            self._prune(now_int)
+            results = []
+            for seconds in intervals:
+                cutoff = now_int - seconds
+                msgs = sum(h[1] for h in self.history if h[0] > cutoff)
+                bytes = sum(h[2] for h in self.history if h[0] > cutoff)
+                results.append((msgs / seconds, bytes / seconds))
+            return results
+
+
 stats_lock = Lock()
 topic_stats = defaultdict(lambda: {"count": 0, "bytes": 0, "last_seen": 0})
 total_messages = 0
 total_bytes = 0
 start_time = time.time()
+traffic_history = TrafficHistory()
 
 
 def on_connect(client, userdata, flags, rc, properties=None):
@@ -80,13 +116,16 @@ def on_message(client, userdata, msg):
         device = topic
 
     payload_size = len(msg.payload)
+    now = time.time()
 
     with stats_lock:
         total_messages += 1
         total_bytes += payload_size
         topic_stats[device]["count"] += 1
         topic_stats[device]["bytes"] += payload_size
-        topic_stats[device]["last_seen"] = time.time()
+        topic_stats[device]["last_seen"] = now
+
+    traffic_history.add(now, payload_size)
 
 
 def format_bytes(size):
@@ -122,6 +161,30 @@ def format_rate(bytes_per_sec):
     return f"{temp_bytes:7.2f} {byte_unit} ({temp_bits:7.2f} {bit_unit})"
 
 
+def format_rate_short(bytes_per_sec):
+    temp_bytes = bytes_per_sec
+    byte_unit = "B/s"
+    if temp_bytes >= 1024:
+        temp_bytes /= 1024
+        byte_unit = "KB/s"
+    if temp_bytes >= 1024:
+        temp_bytes /= 1024
+        byte_unit = "MB/s"
+    return f"{temp_bytes:0.2f} {byte_unit}"
+
+
+def format_bit_rate(bytes_per_sec):
+    temp_bits = bytes_per_sec * 8
+    bit_unit = "bps"
+    if temp_bits >= 1000:
+        temp_bits /= 1000
+        bit_unit = "kbps"
+    if temp_bits >= 1000:
+        temp_bits /= 1000
+        bit_unit = "Mbps"
+    return f"{temp_bits:0.2f} {bit_unit}"
+
+
 def print_report():
     os.system("clear")
     now = time.time()
@@ -140,14 +203,23 @@ def print_report():
         total_msg = total_messages
         total_sz = total_bytes
 
+    # Get history rates
+    rates = traffic_history.get_rates(now)
+    msg_rates = ", ".join([f"{r[0]:0.2f}" for r in rates])
+    byte_rates = ", ".join([format_rate_short(r[1]) for r in rates])
+    bit_rates = ", ".join([format_bit_rate(r[1]) for r in rates])
+
     # Sort by message count descending
     current_stats.sort(key=lambda x: x[1]["count"], reverse=True)
 
     print(
         f"Zigbee2MQTT Network Monitor - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
     )
+    print(f"Messages:  {msg_rates} /s")
+    print(f"Data:      {byte_rates}")
+    print(f"Bitrate:   {bit_rates}")
     print(
-        f"Elapsed: {elapsed:0.1f}s | Total Msg: {total_msg} ({mps:0.2f}/s) | Total Data: {format_bytes(total_sz)} | Rate: {format_rate(bps)}"
+        f"Total: {total_msg} msgs ({mps:0.2f}/s avg) | {format_bytes(total_sz)} ({format_rate_short(bps)} avg) | Elapsed: {elapsed:0.1f}s"
     )
     print("-" * columns)
     print(
@@ -155,8 +227,8 @@ def print_report():
     )
     print("-" * columns)
 
-    # Calculate how many rows we can fit (headers are 5 lines, footer might be 1)
-    max_rows = lines - 6
+    # Calculate how many rows we can fit (headers are 8 lines, footer might be 1)
+    max_rows = lines - 9
     if max_rows < 1:
         max_rows = 1
 

@@ -5,3 +5,4 @@
 - [x] Add bandwidth and message rate calculations
 - [x] Implement topic filtering (ignore bridge noise)
 - [x] Setup project infrastructure
+- [x] Implement 1/5/15 minute load-average style traffic summaries for messages, data, and rates
